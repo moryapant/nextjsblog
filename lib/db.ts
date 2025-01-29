@@ -1,7 +1,8 @@
-import mysql from 'mysql2/promise'
+import mysql from 'mysql2'
+import { Pool, PoolConnection, QueryError } from 'mysql2/promise'
 
 // Create a singleton pool instance
-let pool: mysql.Pool | null = null
+let pool: Pool | null = null
 
 const createPool = () => {
   return mysql.createPool({
@@ -17,7 +18,7 @@ const createPool = () => {
     queueLimit: 10, // Limit queue size
     enableKeepAlive: true,
     keepAliveInitialDelay: 0
-  })
+  }).promise()
 }
 
 const getPool = () => {
@@ -25,18 +26,15 @@ const getPool = () => {
     pool = createPool()
     
     // Add error handling
-    pool.on('error', (err) => {
-      console.error('Unexpected database error:', err)
-      pool = null // Reset pool on error
+    pool.on('connection', (connection: PoolConnection) => {
+      connection.on('error', (err: QueryError) => {
+        console.error('Database connection error:', err)
+      })
     })
 
-    // Add connection acquire error handling
+    // Handle pool errors
     pool.on('acquire', () => {
       console.log('Connection acquired')
-    })
-
-    pool.on('connection', () => {
-      console.log('New connection made')
     })
 
     pool.on('release', () => {
@@ -53,7 +51,7 @@ export async function executeQuery<T>({
   query: string
   values?: any[] 
 }): Promise<T> {
-  let connection: mysql.PoolConnection | null = null
+  let connection: PoolConnection | null = null
   let retries = 3
 
   while (retries > 0) {
@@ -83,7 +81,7 @@ export async function executeQuery<T>({
 
 // Helper function for transactions
 export async function withTransaction<T>(
-  callback: (connection: mysql.PoolConnection) => Promise<T>
+  callback: (connection: PoolConnection) => Promise<T>
 ): Promise<T> {
   const pool = getPool()
   const connection = await pool.getConnection()
@@ -124,7 +122,7 @@ export async function checkConnection(): Promise<boolean> {
 
 // Add a cleanup function for API routes
 export async function withConnection<T>(
-  callback: (connection: mysql.PoolConnection) => Promise<T>
+  callback: (connection: PoolConnection) => Promise<T>
 ): Promise<T> {
   const pool = getPool()
   const connection = await pool.getConnection()
