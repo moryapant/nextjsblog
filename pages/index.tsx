@@ -248,23 +248,20 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
             <div className="max-w-5xl mx-auto">
               <div className="space-y-2">
                 {posts.map((post) => (
-                  <Link href={`/post/${post.id}#comments`} key={post.id} legacyBehavior>
-                    <a className="block group">
-                      <article className="bg-white rounded-xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden border border-gray-200 hover:border-gray-300">
+                  <Link href={`/post/${post.id}#comments`} key={post.id}>
+                    <article className="bg-white rounded-lg shadow-sm hover:shadow-md transition-all duration-200">
+                      <div className="p-3">
                         <div className="flex">
-                          {/* Vote buttons column */}
-                          <div className="flex flex-col items-center w-12 pt-3 bg-gray-50">
-                            <button 
+                          {/* Vote buttons */}
+                          <div className="flex flex-col items-center w-10 flex-shrink-0">
+                            <button
                               onClick={(e) => {
                                 e.preventDefault()
                                 handleVote(post.id, 'up')
                               }}
-                              className={`w-8 h-8 flex items-center justify-center rounded-md ${
-                                votedPosts[post.id] === 'up' 
-                                  ? 'text-green-500 bg-green-50' 
-                                  : 'text-gray-400 hover:text-green-500 hover:bg-gray-100'
-                              } transition-all duration-200`}
-                              aria-label="Upvote"
+                              className={`w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 ${
+                                votedPosts[post.id] === 'up' ? 'text-blue-600' : 'text-gray-400'
+                              }`}
                             >
                               <svg 
                                 className={`w-5 h-5 ${
@@ -298,12 +295,11 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
                                 e.preventDefault()
                                 handleVote(post.id, 'down')
                               }}
-                              className={`w-8 h-8 flex items-center justify-center rounded-md ${
+                              className={`w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 ${
                                 votedPosts[post.id] === 'down' 
-                                  ? 'text-red-500 bg-red-50' 
-                                  : 'text-gray-400 hover:text-red-500 hover:bg-gray-100'
-                              } transition-all duration-200`}
-                              aria-label="Downvote"
+                                  ? 'text-red-500'
+                                  : 'text-gray-400'
+                              }`}
                             >
                               <svg 
                                 className={`w-5 h-5 ${
@@ -325,37 +321,16 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
 
                           {/* Post content */}
                           <div className="flex-1 min-w-0">
-                            <div className="p-3">
-                              <div className="flex items-center text-xs text-gray-500 mb-2">
-                                <Link 
-                                  href={`/f/${post.subfapp}`} 
-                                  onClick={(e) => e.stopPropagation()} 
-                                  className="group/subfapp inline-flex items-center px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 rounded-full font-medium transition-all duration-200"
-                                >
-                                  <span className="mr-1 text-xs opacity-70">f/</span>
-                                  <span className="font-semibold group-hover/subfapp:underline">
-                                    {post.subfapp}
-                                  </span>
-                                </Link>
-                                <span className="mx-2">•</span>
-                                <span>Posted by Anonymous</span>
-                                <span className="mx-2">•</span>
-                                <time>
-                                  {new Date(post.published_date).toLocaleDateString('en-US', {
-                                    month: 'short',
-                                    day: 'numeric',
-                                    year: 'numeric'
-                                  })}
-                                </time>
-                              </div>
-
-                              <h2 className="text-xl font-semibold text-gray-900 group-hover:text-blue-600 transition-colors mb-3">
-                                {post.title}
-                              </h2>
+                            <div className="flex items-center text-xs text-gray-500 space-x-2">
+                              <span>Posted in f/{post.subfapp}</span>
+                              <span>•</span>
+                              <span>{new Date(post.created_at).toLocaleDateString()}</span>
                             </div>
-
+                            <h2 className="mt-1 text-lg font-semibold text-gray-900 leading-tight">
+                              {post.title}
+                            </h2>
                             {post.image_url && (
-                              <div className="w-full px-3">
+                              <div className="mt-3">
                                 <div className="relative aspect-[16/9] bg-gray-100 rounded-lg overflow-hidden">
                                   <img 
                                     src={post.image_url} 
@@ -366,33 +341,30 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
                                 </div>
                               </div>
                             )}
-
-                            <div className="px-3 py-2 mt-2">
-                              <div className="flex items-center space-x-4 text-gray-500 text-sm">
-                                <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                                  </svg>
-                                  <span>{post.comment_count} Comments</span>
-                                </button>
-                                <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                                  </svg>
-                                  <span>Share</span>
-                                </button>
-                                <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                                  </svg>
-                                  <span>Save</span>
-                                </button>
+                            <div className="mt-2 flex items-center space-x-4 text-gray-500 text-sm">
+                              <div className="flex items-center space-x-2">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                                <span>{post.comment_count} Comments</span>
                               </div>
+                              <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                                </svg>
+                                <span>Share</span>
+                              </button>
+                              <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                                </svg>
+                                <span>Save</span>
+                              </button>
                             </div>
                           </div>
                         </div>
-                      </article>
-                    </a>
+                      </div>
+                    </article>
                   </Link>
                 ))}
               </div>
