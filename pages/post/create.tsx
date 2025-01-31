@@ -170,8 +170,10 @@ const PostForm = ({ onSubmit }: PostFormProps) => {
 
 interface Subfapp {
   name: string
-  member_count: number
-  description: string
+  memberCount: number
+  description: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export default function CreatePost() {
@@ -190,15 +192,12 @@ export default function CreatePost() {
     const fetchSubfapps = async () => {
       try {
         const response = await fetch('/api/subfapps')
-        if (response.ok) {
-          const data = await response.json()
-          setSubfapps(data)
-          if (data.length > 0) {
-            setSelectedSubfapp(data[0].name)
-          }
-        }
+        if (!response.ok) throw new Error('Failed to fetch subfapps')
+        const data = await response.json()
+        setSubfapps(data)
       } catch (error) {
         console.error('Error fetching subfapps:', error)
+        setError('Failed to load communities')
       }
     }
 
@@ -217,19 +216,15 @@ export default function CreatePost() {
     setError('')
     setIsLoading(true)
 
-    if (!title.trim() || !content.trim()) {
-      setError('Title and content are required')
-      setIsLoading(false)
-      return
-    }
-
-    if (!selectedSubfapp) {
-      setError('Please select a subfapp')
-      setIsLoading(false)
-      return
-    }
-
     try {
+      if (!user) {
+        throw new Error('Please sign in to create a post')
+      }
+
+      if (!title.trim() || !content.trim() || !selectedSubfapp) {
+        throw new Error('Title, content and community are required')
+      }
+
       const response = await fetch('/api/posts/create', {
         method: 'POST',
         headers: {
@@ -240,20 +235,20 @@ export default function CreatePost() {
           content: content.trim(),
           imageUrl: imageUrl.trim() || null,
           subfapp: selectedSubfapp,
-          userId: user?.uid,
+          userId: user.uid,
         }),
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
+        const data = await response.json()
         throw new Error(data.message || 'Failed to create post')
       }
 
-      router.push(`/post/${data.id}`)
+      const { id } = await response.json()
+      router.push(`/post/${id}`)
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Error creating post. Please try again.')
-      console.error('Error:', error)
+      console.error('Error creating post:', error)
+      setError(error instanceof Error ? error.message : 'Error creating post')
     } finally {
       setIsLoading(false)
     }
@@ -291,7 +286,7 @@ export default function CreatePost() {
                     <option value="">Select a subfapp</option>
                     {subfapps.map((subfapp) => (
                       <option key={subfapp.name} value={subfapp.name}>
-                        f/{subfapp.name} ({subfapp.member_count.toLocaleString()} members)
+                        f/{subfapp.name} ({subfapp.memberCount.toLocaleString()} members)
                       </option>
                     ))}
                   </select>

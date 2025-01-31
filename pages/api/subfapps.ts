@@ -1,9 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { executeQuery } from '../../lib/db'
+import { collection, getDocs, query, orderBy } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
 
 interface Subfapp {
   name: string
-  member_count: number
+  memberCount: number
   description: string
 }
 
@@ -13,13 +14,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const subfapps = await executeQuery<Subfapp[]>({
-      query: `
-        SELECT name, member_count, description
-        FROM subfapps
-        ORDER BY member_count DESC
-      `
-    })
+    const subfappsRef = collection(db, 'subfapps')
+    const q = query(subfappsRef, orderBy('memberCount', 'desc'))
+    const querySnapshot = await getDocs(q)
+    
+    const subfapps = querySnapshot.docs.map(doc => ({
+      name: doc.id,
+      ...doc.data()
+    }))
 
     res.status(200).json(subfapps)
   } catch (error) {

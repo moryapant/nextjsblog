@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { executeQuery } from '../../../lib/db'
+import { adminDb } from '../../../lib/firebase-admin'
+import { FieldValue } from 'firebase-admin/firestore'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -13,48 +14,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ message: 'Missing required fields' })
     }
 
-    // Check if user already liked the comment
-    const [existingLike] = await executeQuery({
-      query: `
-        SELECT id FROM comment_likes 
-        WHERE comment_id = ? AND user_id = ?
-      `,
-      values: [commentId, userId]
-    })
+    const commentRef = adminDb.collection('comments').doc(commentId)
+    const likeRef = commentRef.collection('likes').doc(userId)
 
-    if (existingLike) {
-      // Unlike
-      await executeQuery({
-        query: `
-          DELETE FROM comment_likes 
-          WHERE comment_id = ? AND user_id = ?
-        `,
-        values: [commentId, userId]
+    // Check if user already liked
+    const likeDoc = await likeRef.get()
+    
+    if (likeDoc.exists) {
+      // Unlike: Remove like document and decrement count
+      await likeRef.delete()
+      await commentRef.update({
+        likes: FieldValue.increment(-1)
       })
     } else {
-      // Like
-      await executeQuery({
-        query: `
-          INSERT INTO comment_likes (comment_id, user_id)
-          VALUES (?, ?)
-        `,
-        values: [commentId, userId]
+      // Like: Create like document and increment count
+      await likeRef.set({
+        userId,
+        createdAt: FieldValue.serverTimestamp()
+      })
+      await commentRef.update({
+        likes: FieldValue.increment(1)
       })
     }
 
     // Get updated like count
-    const [{ likeCount }] = await executeQuery({
-      query: `
-        SELECT COUNT(*) as likeCount 
-        FROM comment_likes 
-        WHERE comment_id = ?
-      `,
-      values: [commentId]
-    })
+    const updatedComment = await commentRef.get()
+    const likeCount = updatedComment.data()?.likes || 0
 
     res.status(200).json({ likeCount })
   } catch (error) {
     console.error('Error handling comment like:', error)
-    res.status(500).json({ message: 'Error handling comment like' })
+    res.status(500).json({ message: 'Error handling like' })
   }
 } 

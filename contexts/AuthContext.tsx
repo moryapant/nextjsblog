@@ -57,27 +57,30 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         }),
       })
 
-      if (response.ok) {
-        const dbUserData = await response.json()
-        setDbUser(dbUserData)
+      if (!response.ok) {
+        throw new Error('Failed to sync user')
       }
+
+      const dbUserData = await response.json()
+      setDbUser(dbUserData)
     } catch (error) {
-      console.error('Error syncing user data:', error)
+      console.error('Error syncing user:', error)
     }
   }
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      handleAuthStateChanged(user)
+      setUser(user)
+      setLoading(false)
+      
       if (user) {
         await syncUserWithDb(user)
       } else {
         setDbUser(null)
       }
-      setLoading(false)
     })
 
-    return unsubscribe
+    return () => unsubscribe()
   }, [])
 
   const handleAuthStateChanged = (user: User | null) => {

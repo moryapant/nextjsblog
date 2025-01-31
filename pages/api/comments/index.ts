@@ -1,8 +1,35 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { executeQuery } from '../../../lib/db'
+import { adminDb } from '../../../lib/firebase-admin'
+import { FieldValue } from 'firebase-admin/firestore'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method === 'POST') {
+  if (req.method === 'GET') {
+    try {
+      const { postId } = req.query
+
+      if (!postId) {
+        return res.status(400).json({ message: 'Post ID is required' })
+      }
+
+      const commentsRef = adminDb.collection('comments')
+      const q = commentsRef.where('postId', '==', postId)
+      const querySnapshot = await q.get()
+
+      const comments = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt.toDate().toISOString(),
+        updatedAt: doc.data().updatedAt.toDate().toISOString()
+      }))
+
+      comments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+
+      res.status(200).json(comments)
+    } catch (error) {
+      console.error('Error fetching comments:', error)
+      res.status(500).json({ message: 'Error fetching comments' })
+    }
+  } else if (req.method === 'POST') {
     try {
       const { postId, userId, content, userName, userAvatar } = req.body
 
@@ -10,79 +37,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(400).json({ message: 'Missing required fields' })
       }
 
-      const result = await executeQuery({
-        query: `
-          INSERT INTO comments (post_id, user_id, user_name, user_avatar, content)
-          VALUES (?, ?, ?, ?, ?)
-        `,
-        values: [postId, userId, userName || 'Anonymous', userAvatar || null, content]
+      const docRef = await adminDb.collection('comments').add({
+        postId,
+        userId,
+        userName,
+        userAvatar,
+        content,
+        likes: 0,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
       })
 
-      // After inserting, fetch the newly created comment
-      const [newComment] = await executeQuery({
-        query: `
-          SELECT 
-            id,
-            post_id,
-            user_id,
-            user_name,
-            user_avatar,
-            content,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as formatted_date
-          FROM comments 
-          WHERE id = ?
-        `,
-        values: [result.insertId]
+      // Update post's comment count
+      await adminDb.collection('posts').doc(postId).update({
+        commentCount: FieldValue.increment(1)
       })
 
-      res.status(200).json(newComment)
+      const newComment = {
+        id: docRef.id,
+        postId,
+        userId,
+        userName,
+        userAvatar,
+        content,
+        likes: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+
+      res.status(201).json(newComment)
     } catch (error) {
       console.error('Error creating comment:', error)
       res.status(500).json({ message: 'Error creating comment' })
     }
-  } else if (req.method === 'GET') {
-    try {
-      const { postId } = req.query
-
-      const comments = await executeQuery({
-        query: `
-          SELECT 
-            c.*,
-            DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i:%s') as formatted_date,
-            COUNT(DISTINCT cl.id) as likes,
-            COUNT(DISTINCT cr.id) as reply_count
-          FROM comments c
-          LEFT JOIN comment_likes cl ON c.id = cl.comment_id
-          LEFT JOIN comment_replies cr ON c.id = cr.parent_comment_id
-          WHERE c.post_id = ?
-          GROUP BY c.id
-          ORDER BY c.created_at DESC
-        `,
-        values: [postId]
-      })
-
-      // Then fetch replies for each comment
-      for (let comment of comments) {
-        const replies = await executeQuery({
-          query: `
-            SELECT 
-              *,
-              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as formatted_date
-            FROM comment_replies 
-            WHERE parent_comment_id = ?
-            ORDER BY created_at ASC
-          `,
-          values: [comment.id]
-        })
-        comment.replies = replies
-      }
-
-      res.status(200).json(comments)
-    } catch (error) {
-      console.error('Error fetching comments:', error)
-      res.status(500).json({ message: 'Error fetching comments' })
-    }
   } else {
-    res.status(405).json({ message: 'Method not allowed' })
+    res.setHeader('Allow', ['GET', 'POST'])
+    res.status(405).end(`Method ${req.method} Not Allowed`)
   }
 } 

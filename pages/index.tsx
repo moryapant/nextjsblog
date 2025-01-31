@@ -5,66 +5,44 @@ import { executeQuery } from '../lib/db'
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { Post } from '../types'
+import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore'
+import { db } from '../lib/firebase' // This is your client-side Firebase instance
+import { VoteButtons } from '../components/VoteButtons'
+import { PostCard } from '../components/PostCard'
+import { adminDb } from '../lib/firebase-admin'
 
 interface Subfapp {
   name: string
-  member_count: number
+  memberCount: number
   description: string
+  createdAt: Date
+  updatedAt: Date
 }
 
 interface HomePageProps {
-  latestPosts: Post[]
-  randomPosts: Post[]
+  posts: Post[]
   subfapps: Subfapp[]
-  joinedSubfapps: string[]
 }
 
-const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: HomePageProps) => {
-  const { user, dbUser } = useAuth()
-  const [posts, setPosts] = useState(latestPosts)
-  const [votedPosts, setVotedPosts] = useState<Record<number, 'up' | 'down' | null>>({})
+interface HomeProps {
+  initialPosts: Post[]
+  initialVotedPosts: Record<string, 'up' | 'down'>
+  subfapps: Subfapp[]
+  initialMemberships: string[]
+}
+
+const Home = ({ initialPosts, initialVotedPosts, subfapps = [], initialMemberships = [] }: HomeProps) => {
+  const { user } = useAuth()
+  const [posts, setPosts] = useState(initialPosts)
+  const [votedPosts, setVotedPosts] = useState(initialVotedPosts)
   const [voteError, setVoteError] = useState<string | null>(null)
-  const [userJoinedSubfapps, setUserJoinedSubfapps] = useState<string[]>(joinedSubfapps)
-  const [isJoining, setIsJoining] = useState<string | null>(null)
+  const [joinedSubfapps, setJoinedSubfapps] = useState(initialMemberships)
+  const [isJoining, setIsJoining] = useState<Record<string, boolean>>({})
+  const [error, setError] = useState<string | null>(null)
 
-  // Fetch user votes when component mounts or user changes
-  useEffect(() => {
-    const fetchUserVotes = async () => {
-      if (!user) {
-        setVotedPosts({})
-        return
-      }
-
-      try {
-        const response = await fetch(`/api/posts/user-votes?userId=${user.uid}`)
-        if (response.ok) {
-          const votes = await response.json()
-          console.log('Fetched votes:', votes) // Debug log
-          const voteMap: Record<number, 'up' | 'down'> = {}
-          votes.forEach((vote: { post_id: number; vote_type: 'up' | 'down' }) => {
-            voteMap[vote.post_id] = vote.vote_type
-          })
-          console.log('Vote map:', voteMap) // Debug log
-          setVotedPosts(voteMap)
-        }
-      } catch (error) {
-        console.error('Error fetching user votes:', error)
-      }
-    }
-
-    fetchUserVotes()
-  }, [user])
-
-  const handleVote = async (postId: number, voteType: 'up' | 'down') => {
+  const handleVote = async (postId: string, voteType: 'up' | 'down') => {
     if (!user) {
       setVoteError('Please sign in to vote')
-      setTimeout(() => setVoteError(null), 3000)
-      return
-    }
-
-    // If clicking the same vote type, show message
-    if (votedPosts[postId] === voteType) {
-      setVoteError(`You've already ${voteType}voted this post`)
       setTimeout(() => setVoteError(null), 3000)
       return
     }
@@ -83,23 +61,18 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.message)
+        throw new Error('Failed to vote')
       }
 
-      const updatedPost = await response.json()
-      setPosts(posts.map(post => 
+      const data = await response.json()
+      setPosts(posts => posts.map(post => 
         post.id === postId 
-          ? { ...post, upvotes: updatedPost.upvotes, downvotes: updatedPost.downvotes }
+          ? { ...post, upvotes: data.upvotes, downvotes: data.downvotes }
           : post
       ))
-      setVotedPosts(prev => ({ ...prev, [postId]: voteType }))
+      setVotedPosts(prev => ({ ...prev, [postId]: data.userVote }))
     } catch (error) {
-      if (error instanceof Error) {
-        setVoteError(error.message)
-      } else {
-        setVoteError('Error voting on post')
-      }
+      setVoteError('Error voting on post')
       setTimeout(() => setVoteError(null), 3000)
     }
   }
@@ -108,20 +81,43 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
     return post.upvotes - post.downvotes
   }
 
+  useEffect(() => {
+    const fetchUserMemberships = async () => {
+      if (!user) {
+        setJoinedSubfapps([])
+        return
+      }
+
+      try {
+        const response = await fetch(`/api/subfapps/user-memberships?userId=${user.uid}`)
+        if (!response.ok) throw new Error('Failed to fetch memberships')
+        
+        const data = await response.json()
+        setJoinedSubfapps(data.memberships)
+      } catch (error) {
+        console.error('Error fetching memberships:', error)
+        setError('Error fetching memberships')
+        setTimeout(() => setError(null), 3000)
+      }
+    }
+
+    fetchUserMemberships()
+  }, [user])
+
   const handleJoinSubfapp = async (subfappName: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
 
     if (!user) {
-      setVoteError('Please sign in to join communities')
-      setTimeout(() => setVoteError(null), 3000)
+      setError('Please sign in to join communities')
+      setTimeout(() => setError(null), 3000)
       return
     }
 
-    setIsJoining(subfappName)
+    setIsJoining(prev => ({ ...prev, [subfappName]: true }))
 
     try {
-      const action = userJoinedSubfapps.includes(subfappName) ? 'leave' : 'join'
+      const action = joinedSubfapps.includes(subfappName) ? 'leave' : 'join'
       const response = await fetch('/api/subfapps/membership', {
         method: 'POST',
         headers: {
@@ -138,30 +134,39 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
         throw new Error('Failed to update membership')
       }
 
-      setUserJoinedSubfapps(prev => 
+      const data = await response.json()
+      
+      setJoinedSubfapps(prev => 
         action === 'join'
           ? [...prev, subfappName]
           : prev.filter(name => name !== subfappName)
       )
+
+      setPosts(prev => prev.map(post => 
+        post.subfapp === subfappName
+          ? { ...post, upvotes: data.upvotes, downvotes: data.downvotes }
+          : post
+      ))
     } catch (error) {
-      setVoteError('Error updating membership')
-      setTimeout(() => setVoteError(null), 3000)
+      console.error('Error updating membership:', error)
+      setError('Error updating membership')
+      setTimeout(() => setError(null), 3000)
     } finally {
-      setIsJoining(null)
+      setIsJoining(prev => ({ ...prev, [subfappName]: false }))
     }
   }
 
   return (
     <div className="min-h-screen bg-[#DAE0E6] pt-16">
       <Head>
-        <title>Bollyshaggers</title>
+        <title>Bollyshaggers - Home</title>
         <meta name="description" content="A community for Bollywood enthusiasts" />
       </Head>
 
       {/* Error Toast */}
-      {voteError && (
-        <div className="fixed top-20 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg shadow-md transition-all duration-500 z-50">
-          {voteError}
+      {error && (
+        <div className="fixed z-50 px-4 py-3 text-red-700 transition-all duration-500 bg-red-100 border border-red-400 rounded-lg shadow-md top-20 right-4">
+          {error}
         </div>
       )}
 
@@ -169,75 +174,49 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
         <div className="flex gap-6 px-4 max-w-[2000px] mx-auto">
           {/* Left Sidebar */}
           {subfapps.length > 0 && (
-            <div className="hidden lg:block w-64 flex-shrink-0 space-y-4">
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                <div className="p-4 bg-blue-500 text-white">
-                  <h2 className="font-semibold text-lg">Popular Subfapps</h2>
+            <div className="flex-shrink-0 hidden w-64 space-y-4 lg:block">
+              <div className="overflow-hidden bg-white border border-gray-200 rounded-lg shadow-sm">
+                <div className="p-4 text-white bg-blue-500">
+                  <h2 className="text-lg font-semibold">Popular Communities</h2>
                 </div>
                 <div className="divide-y divide-gray-100">
                   {subfapps.map((subfapp) => (
-                    <Link 
-                      key={subfapp.name}
-                      href={`/f/${subfapp.name}`}
-                      className="block hover:bg-gray-50 transition-colors"
-                    >
-                      <div className="p-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-2">
-                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
-                              f/
-                            </div>
-                            <div>
-                              <h3 className="font-medium text-gray-900 hover:text-blue-600">
-                                {subfapp.name}
-                              </h3>
-                              <p className="text-xs text-gray-500">
-                                {subfapp.member_count.toLocaleString()} members
-                              </p>
-                            </div>
-                          </div>
-                          {user ? (
-                            <button 
-                              onClick={(e) => handleJoinSubfapp(subfapp.name, e)}
-                              disabled={isJoining === subfapp.name}
-                              className={`px-4 py-1 text-sm font-medium rounded-full transition-colors ${
-                                userJoinedSubfapps.includes(subfapp.name)
-                                  ? 'text-gray-600 hover:text-gray-700 hover:bg-gray-100'
-                                  : 'text-blue-600 hover:text-blue-700 hover:bg-blue-50'
-                              }`}
-                            >
-                              {isJoining === subfapp.name
-                                ? 'Loading...'
-                                : userJoinedSubfapps.includes(subfapp.name)
-                                ? 'Leave'
-                                : 'Join'}
-                            </button>
-                          ) : (
-                            <Link
-                              href="/login"
-                              onClick={(e) => e.stopPropagation()}
-                              className="px-4 py-1 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-full transition-colors"
-                            >
-                              Join
-                            </Link>
-                          )}
-                        </div>
-                        {subfapp.description && (
-                          <p className="mt-2 text-sm text-gray-600 line-clamp-2">
-                            {subfapp.description}
+                    <div key={subfapp.name} className="p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Link 
+                            href={`/f/${subfapp.name}`}
+                            className="text-sm font-medium text-gray-900 hover:text-blue-600"
+                          >
+                            f/{subfapp.name}
+                          </Link>
+                          <p className="text-xs text-gray-500">
+                            {subfapp.memberCount.toLocaleString()} members
                           </p>
-                        )}
+                        </div>
+                        <button
+                          onClick={(e) => handleJoinSubfapp(subfapp.name, e)}
+                          disabled={isJoining[subfapp.name]}
+                          className={`px-3 py-1 text-sm font-medium rounded-full ${
+                            joinedSubfapps.includes(subfapp.name)
+                              ? 'text-blue-700 hover:bg-blue-50'
+                              : 'text-white bg-blue-600 hover:bg-blue-700'
+                          }`}
+                        >
+                          {isJoining[subfapp.name]
+                            ? 'Loading...'
+                            : joinedSubfapps.includes(subfapp.name)
+                            ? 'Joined'
+                            : 'Join'}
+                        </button>
                       </div>
-                    </Link>
+                      {subfapp.description && (
+                        <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                          {subfapp.description}
+                        </p>
+                      )}
+                    </div>
                   ))}
-                </div>
-                <div className="p-3 bg-gray-50 border-t border-gray-100">
-                  <Link 
-                    href="/subfapps"
-                    className="block text-center text-sm text-blue-600 hover:text-blue-700 font-medium"
-                  >
-                    View All Subfapps
-                  </Link>
                 </div>
               </div>
             </div>
@@ -246,184 +225,35 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
           {/* Main Content */}
           <div className="flex-1">
             <div className="max-w-5xl mx-auto">
-              <div className="space-y-2">
+              <div className="space-x-1 space-y-4">
                 {posts.map((post) => (
-                  <Link href={`/post/${post.id}#comments`} key={post.id}>
-                    <article className="bg-white rounded-lg shadow-sm hover:shadow-md transition-all duration-200">
-                      <div className="p-3">
-                        <div className="flex">
-                          {/* Vote buttons */}
-                          <div className="flex flex-col items-center w-10 flex-shrink-0">
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault()
-                                handleVote(post.id, 'up')
-                              }}
-                              className={`w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 ${
-                                votedPosts[post.id] === 'up' ? 'text-blue-600' : 'text-gray-400'
-                              }`}
-                            >
-                              <svg 
-                                className={`w-5 h-5 ${
-                                  votedPosts[post.id] === 'up' ? 'transform scale-110' : ''
-                                }`}
-                                viewBox="0 0 24 24" 
-                                fill={votedPosts[post.id] === 'up' ? 'currentColor' : 'none'} 
-                                stroke="currentColor" 
-                                strokeWidth="2.5"
-                              >
-                                <path 
-                                  d="M12 4l8 8H4l8-8z" 
-                                  strokeLinecap="round" 
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </button>
-                            
-                            <span className={`text-sm font-bold my-1 ${
-                              votedPosts[post.id] === 'up' 
-                                ? 'text-green-500'
-                                : votedPosts[post.id] === 'down'
-                                ? 'text-red-500'
-                                : 'text-gray-800'
-                            }`}>
-                              {getVoteScore(post)}
-                            </span>
-                            
-                            <button 
-                              onClick={(e) => {
-                                e.preventDefault()
-                                handleVote(post.id, 'down')
-                              }}
-                              className={`w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 ${
-                                votedPosts[post.id] === 'down' 
-                                  ? 'text-red-500'
-                                  : 'text-gray-400'
-                              }`}
-                            >
-                              <svg 
-                                className={`w-5 h-5 ${
-                                  votedPosts[post.id] === 'down' ? 'transform scale-110' : ''
-                                }`}
-                                viewBox="0 0 24 24" 
-                                fill={votedPosts[post.id] === 'down' ? 'currentColor' : 'none'} 
-                                stroke="currentColor" 
-                                strokeWidth="2.5"
-                              >
-                                <path 
-                                  d="M4 8l8 8 8-8H4z" 
-                                  strokeLinecap="round" 
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </button>
-                          </div>
-
-                          {/* Post content */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center text-xs text-gray-500 space-x-2">
-                              <span>Posted in f/{post.subfapp}</span>
-                              <span>•</span>
-                              <span>{new Date(post.created_at).toLocaleDateString()}</span>
-                            </div>
-                            <h2 className="mt-1 text-lg font-semibold text-gray-900 leading-tight">
-                              {post.title}
-                            </h2>
-                            {post.image_url && (
-                              <div className="mt-3">
-                                <div className="relative aspect-[16/9] bg-gray-100 rounded-lg overflow-hidden">
-                                  <img 
-                                    src={post.image_url} 
-                                    alt={post.title}
-                                    className="absolute inset-0 w-full h-full object-contain"
-                                    loading="lazy"
-                                  />
-                                </div>
-                              </div>
-                            )}
-                            <div className="mt-2 flex items-center space-x-4 text-gray-500 text-sm">
-                              <div className="flex items-center space-x-2">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                                </svg>
-                                <span>{post.comment_count} Comments</span>
-                              </div>
-                              <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                                </svg>
-                                <span>Share</span>
-                              </button>
-                              <button className="flex items-center space-x-2 hover:bg-gray-100 px-3 py-2 rounded-full transition-colors">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                                </svg>
-                                <span>Save</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </article>
-                  </Link>
+                  <PostCard
+                    key={post.id}
+                    post={post}
+                    userVote={votedPosts[post.id]}
+                    onVoteError={setVoteError}
+                  />
                 ))}
+                {posts.length === 0 && (
+                  <div className="p-4 text-center bg-white rounded-lg shadow-sm">
+                    <p className="text-gray-500">No posts yet. Be the first to create one!</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
           {/* Right Sidebar */}
-          <div className="hidden lg:block w-96 flex-shrink-0 space-y-4">
-            {/* Random Posts Card */}
-            <div className="bg-white rounded-lg shadow-sm p-4">
-              <h2 className="text-base font-semibold text-gray-900 mb-4">Random Posts</h2>
-              <div className="space-y-4">
-                {randomPosts.map(post => (
-                  <Link 
-                    key={post.id} 
-                    href={`/post/${post.id}`}
-                    className="block group"
-                  >
-                    <div className="flex items-start space-x-3">
-                      {/* Thumbnail */}
-                      {post.image_url && (
-                        <div className="flex-shrink-0 w-16 h-16 rounded-md overflow-hidden bg-gray-100">
-                          <img
-                            src={post.image_url}
-                            alt=""
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                          />
-                        </div>
-                      )}
-                      
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-sm font-medium text-gray-900 group-hover:text-blue-600 line-clamp-2">
-                          {post.title}
-                        </h3>
-                        <div className="mt-1 flex items-center text-xs text-gray-500 space-x-2">
-                          <span>f/{post.subfapp}</span>
-                          <span>•</span>
-                          <span>{post.upvotes - post.downvotes} points</span>
-                          <span>•</span>
-                          <span>{new Date(post.created_at).toLocaleDateString()}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-
+          <div className="flex-shrink-0 hidden space-y-4 lg:block w-96">
             {/* Popular Communities Card */}
-            <div className="bg-white rounded-lg shadow-sm p-4">
-              <h2 className="text-base font-semibold text-gray-900 mb-4">Popular Communities</h2>
+            <div className="p-4 bg-white rounded-lg shadow-sm">
+              <h2 className="mb-4 text-base font-semibold text-gray-900">Popular Communities</h2>
               <div className="space-y-3">
                 <Link 
                   href="/f/movies"
-                  className="flex items-center space-x-3 p-2 hover:bg-gray-50 rounded-md group"
+                  className="flex items-center p-2 space-x-3 rounded-md hover:bg-gray-50 group"
                 >
-                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
+                  <div className="flex items-center justify-center w-8 h-8 text-sm font-bold text-blue-600 bg-blue-100 rounded-full">
                     f/
                   </div>
                   <div className="flex-1">
@@ -440,7 +270,7 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
       </main>
 
       {/* Sign-in Prompt */}
-      <div className="mt-6 text-center text-sm text-gray-600">
+      <div className="mt-6 text-sm text-center text-gray-600">
         By continuing, you agree to Bollyshaggers's Terms of Service and Privacy Policy
       </div>
     </div>
@@ -449,92 +279,102 @@ const Home = ({ latestPosts, randomPosts, subfapps = [], joinedSubfapps = [] }: 
 
 export const getServerSideProps: GetServerSideProps = async ({ req }) => {
   try {
-    // Get user ID from auth cookie
-    const authCookie = req.cookies['auth']
-    let userId = null
-    if (authCookie) {
-      try {
-        const decodedToken = JSON.parse(authCookie)
-        userId = decodedToken.uid
-      } catch (error) {
-        console.error('Error decoding auth token:', error)
+    const userId = req.cookies.auth ? JSON.parse(req.cookies.auth).uid : null
+
+    // Fetch posts
+    const postsSnapshot = await adminDb.collection('posts')
+      .orderBy('createdAt', 'desc')
+      .limit(20)
+      .get()
+
+    const posts = postsSnapshot.docs.map(doc => {
+      const data = doc.data()
+      return {
+        id: doc.id,
+        ...data,
+        // Safely handle dates with optional chaining and fallbacks
+        createdAt: data?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        // Ensure all required fields have fallback values
+        title: data.title || '',
+        content: data.content || '',
+        imageUrl: data.imageUrl || null,
+        subfapp: data.subfapp || '',
+        userId: data.userId || '',
+        upvotes: data.upvotes || 0,
+        downvotes: data.downvotes || 0,
+        commentCount: data.commentCount || 0
       }
+    })
+
+    // Get user's votes if logged in
+    let votedPosts = {}
+    if (userId) {
+      const votesPromises = posts.map(post => 
+        adminDb.collection('posts').doc(post.id)
+          .collection('votes').doc(userId).get()
+      )
+      const voteDocs = await Promise.all(votesPromises)
+      votedPosts = voteDocs.reduce((acc, doc, index) => {
+        if (doc.exists) {
+          acc[posts[index].id] = doc.data()?.voteType
+        }
+        return acc
+      }, {})
     }
 
-    const [latestPosts, randomPosts, subfapps, joinedSubfapps] = await Promise.all([
-      // Get latest posts
-      executeQuery<Post[]>({
-        query: `
-          SELECT 
-            p.*,
-            (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
-          FROM posts p
-          ORDER BY created_at DESC
-          LIMIT 10
-        `,
-        values: []
-      }),
+    // Fetch subfapps
+    const subfappsSnapshot = await adminDb.collection('subfapps')
+      .orderBy('memberCount', 'desc')
+      .limit(5)
+      .get()
 
-      // Get random posts
-      executeQuery<Post[]>({
-        query: `
-          SELECT 
-            id,
-            title,
-            subfapp,
-            image_url,
-            upvotes,
-            downvotes,
-            created_at
-          FROM posts 
-          ORDER BY RAND()
-          LIMIT 5
-        `,
-        values: []
-      }),
+    const subfapps = subfappsSnapshot.docs.map(doc => {
+      const data = doc.data()
+      return {
+        name: doc.id,
+        memberCount: data.memberCount || 0,
+        description: data.description || '',
+        createdAt: data?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
+      }
+    })
 
-      // Get popular subfapps
-      executeQuery<Subfapp[]>({
-        query: `
-          SELECT 
-            name,
-            member_count,
-            description
-          FROM subfapps
-          ORDER BY member_count DESC
-          LIMIT 10
-        `,
-        values: []
-      }),
+    // Get user's memberships if logged in
+    let memberships: string[] = []
+    if (userId) {
+      const subfappsSnapshot = await adminDb.collection('subfapps').get()
+      const membershipPromises = subfappsSnapshot.docs.map(async (subfappDoc) => {
+        const memberDoc = await adminDb
+          .collection('subfapps')
+          .doc(subfappDoc.id)
+          .collection('members')
+          .doc(userId)
+          .get()
+        
+        return memberDoc.exists ? subfappDoc.id : null
+      })
 
-      // Get user's joined subfapps
-      userId ? executeQuery<{ subfapp_name: string }[]>({
-        query: `
-          SELECT subfapp_name
-          FROM subfapp_members
-          WHERE user_id = ?
-        `,
-        values: [userId]
-      }).then(results => results.map(r => r.subfapp_name))
-        .catch(() => []) : Promise.resolve([])
-    ])
+      memberships = (await Promise.all(membershipPromises))
+        .filter((subfappName): subfappName is string => subfappName !== null)
+    }
 
     return {
       props: {
-        latestPosts: JSON.parse(JSON.stringify(latestPosts)),
-        randomPosts: JSON.parse(JSON.stringify(randomPosts)),
-        subfapps: JSON.parse(JSON.stringify(subfapps || [])),
-        joinedSubfapps: JSON.parse(JSON.stringify(joinedSubfapps))
+        initialPosts: JSON.parse(JSON.stringify(posts)),
+        initialVotedPosts: votedPosts,
+        subfapps: JSON.parse(JSON.stringify(subfapps)),
+        initialMemberships: memberships
       }
     }
   } catch (error) {
-    console.error('Error fetching posts:', error)
+    console.error('Error fetching data:', error)
     return {
       props: {
-        latestPosts: [],
-        randomPosts: [],
+        initialPosts: [],
+        initialVotedPosts: {},
         subfapps: [],
-        joinedSubfapps: []
+        initialMemberships: []
       }
     }
   }

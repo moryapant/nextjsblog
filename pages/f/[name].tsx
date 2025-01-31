@@ -4,33 +4,36 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
-import { executeQuery } from '../../lib/db'
+import { adminDb } from '../../lib/firebase-admin'
+import { where, limit } from 'firebase-admin/firestore'
 
 interface Post {
-  id: number
+  id: string
   title: string
-  content: string | null
-  image_url: string | null
-  published_date: string
-  subfapp: string | null
-  created_at: string
-  updated_at: string
-  downvotes: number
+  content: string
+  imageUrl?: string
+  subfapp: string
+  userId: string
+  createdAt: string
+  updatedAt: string
   upvotes: number
-  user_id: string
+  downvotes: number
+  commentCount: number
 }
 
 interface Subfapp {
   name: string
-  member_count: number
+  memberCount: number
   description: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 interface SubfappPageProps {
   subfapp: Subfapp
   posts: Post[]
   isJoined: boolean
-  initialVotedPosts: Record<number, 'up' | 'down'>
+  initialVotedPosts: Record<string, 'up' | 'down'>
   randomPosts: Post[]
 }
 
@@ -58,11 +61,14 @@ export default function SubfappPage({
       }
 
       try {
-        const response = await fetch(`/api/subfapps/user-memberships?userId=${user.uid}`)
-        if (response.ok) {
-          const memberships = await response.json()
-          setIsJoined(memberships.some((m: any) => m.subfapp_name === subfapp.name))
-        }
+        const memberDoc = await adminDb
+          .collection('subfapps')
+          .doc(subfapp.name)
+          .collection('members')
+          .doc(user.uid)
+          .get()
+
+        setIsJoined(memberDoc.exists)
       } catch (error) {
         console.error('Error checking membership:', error)
       }
@@ -80,26 +86,29 @@ export default function SubfappPage({
       }
 
       try {
-        const response = await fetch(`/api/posts/user-votes?userId=${user.uid}`)
-        if (response.ok) {
-          const votes = await response.json()
-          const voteMap: Record<number, 'up' | 'down'> = {}
-          votes.forEach((vote: { post_id: number; vote_type: 'up' | 'down' }) => {
-            voteMap[vote.post_id] = vote.vote_type
-          })
-          setVotedPosts(voteMap)
-        }
+        const votesSnapshot = await Promise.all(
+          posts.map(post => 
+            getDoc(doc(db, 'posts', post.id, 'votes', user.uid))
+          )
+        )
+        const voteMap: Record<string, 'up' | 'down'> = {}
+        votesSnapshot.forEach((voteDoc, index) => {
+          if (voteDoc.exists()) {
+            voteMap[posts[index].id] = voteDoc.data().voteType
+          }
+        })
+        setVotedPosts(voteMap)
       } catch (error) {
         console.error('Error fetching user votes:', error)
       }
     }
 
     fetchUserVotes()
-  }, [user])
+  }, [user, posts])
 
   const handleJoinSubfapp = async () => {
     if (!user) {
-      setError('Please sign in to join subfapps')
+      setError('Please sign in to join communities')
       setTimeout(() => setError(null), 3000)
       return
     }
@@ -124,8 +133,20 @@ export default function SubfappPage({
         throw new Error('Failed to update membership')
       }
 
+      const data = await response.json()
       setIsJoined(!isJoined)
+      
+      // Update the member count
+      setPosts(prevPosts => prevPosts.map(post => 
+        post.subfapp === subfapp.name 
+          ? { ...post, memberCount: data.memberCount }
+          : post
+      ))
+
+      // Refresh the page to get updated data
+      router.replace(router.asPath)
     } catch (error) {
+      console.error('Error updating membership:', error)
       setError('Error updating membership')
       setTimeout(() => setError(null), 3000)
     } finally {
@@ -133,7 +154,7 @@ export default function SubfappPage({
     }
   }
 
-  const handleVote = async (postId: number, voteType: 'up' | 'down') => {
+  const handleVote = async (postId: string, voteType: 'up' | 'down') => {
     if (!user) {
       setError('Please sign in to vote')
       setTimeout(() => setError(null), 3000)
@@ -208,7 +229,7 @@ export default function SubfappPage({
                 <div>
                   <h1 className="text-3xl font-bold text-gray-900">f/{subfapp.name}</h1>
                   <p className="text-sm text-gray-500 mt-1">
-                    {subfapp.member_count.toLocaleString()} members
+                    {subfapp.memberCount.toLocaleString()} members
                   </p>
                 </div>
               </div>
@@ -361,10 +382,10 @@ export default function SubfappPage({
                               <h2 className="text-lg font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
                                 {post.title}
                               </h2>
-                              {post.image_url && (
+                              {post.imageUrl && (
                                 <div className="mt-3 relative aspect-video bg-gray-100 rounded-lg overflow-hidden">
                                   <img
-                                    src={post.image_url}
+                                    src={post.imageUrl}
                                     alt={post.title}
                                     className="absolute inset-0 w-full h-full object-cover"
                                     loading="lazy"
@@ -372,7 +393,7 @@ export default function SubfappPage({
                                 </div>
                               )}
                               <div className="mt-2 text-xs text-gray-500">
-                                Posted by Anonymous • {new Date(post.created_at).toLocaleDateString()}
+                                Posted by Anonymous • {new Date(post.createdAt).toLocaleDateString()}
                               </div>
                             </Link>
                           </div>
@@ -421,7 +442,7 @@ export default function SubfappPage({
                           <span>•</span>
                           <span>{post.upvotes - post.downvotes} points</span>
                           <span>•</span>
-                          <span>{new Date(post.created_at).toLocaleDateString()}</span>
+                          <span>{new Date(post.createdAt).toLocaleDateString()}</span>
                         </div>
                       </div>
                     </div>
@@ -439,13 +460,13 @@ export default function SubfappPage({
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                     <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
                   </svg>
-                  <span>{subfapp.member_count.toLocaleString()} members</span>
+                  <span>{subfapp.memberCount.toLocaleString()} members</span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                     <path d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" />
                   </svg>
-                  <span>Created {new Date(subfapp.created_at).toLocaleDateString()}</span>
+                  <span>Created {new Date(subfapp.createdAt).toLocaleDateString()}</span>
                 </div>
               </div>
             </div>
@@ -458,119 +479,106 @@ export default function SubfappPage({
 
 export const getServerSideProps: GetServerSideProps = async ({ params, req }) => {
   try {
-    if (!params?.name || Array.isArray(params.name)) {
+    const userId = req.cookies.auth ? JSON.parse(req.cookies.auth).uid : null
+    const subfappName = params?.name as string
+
+    // Get subfapp details
+    const subfappDoc = await adminDb.collection('subfapps').doc(subfappName).get()
+    if (!subfappDoc.exists) {
       return { notFound: true }
     }
 
-    // Get user ID from auth token in cookie
-    const authCookie = req.cookies['auth']
-    let userId = null
-    if (authCookie) {
-      try {
-        const decodedToken = JSON.parse(authCookie)
-        userId = decodedToken.uid
-      } catch (error) {
-        console.error('Error decoding auth token:', error)
+    const subfappData = subfappDoc.data()
+    const subfapp = {
+      name: subfappDoc.id,
+      ...subfappData,
+      createdAt: subfappData?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+      updatedAt: subfappData?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+      memberCount: subfappData?.memberCount || 0,
+      description: subfappData?.description || ''
+    }
+
+    // Get posts for this subfapp
+    const postsSnapshot = await adminDb.collection('posts')
+      .where('subfapp', '==', subfappName)
+      .get()
+    
+    const posts = postsSnapshot.docs.map(doc => {
+      const data = doc.data()
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: data?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        title: data.title || '',
+        content: data.content || '',
+        imageUrl: data.imageUrl || null,
+        subfapp: data.subfapp || '',
+        userId: data.userId || '',
+        upvotes: data.upvotes || 0,
+        downvotes: data.downvotes || 0,
+        commentCount: data.commentCount || 0
       }
-    }
-
-    // First check if subfapp exists
-    const subfappExists = await executeQuery<any[]>({
-      query: 'SELECT 1 FROM subfapps WHERE name = ?',
-      values: [params.name]
     })
 
-    if (!subfappExists || subfappExists.length === 0) {
-      console.error(`Subfapp ${params.name} not found`)
-      return { notFound: true }
+    // Check user membership if logged in
+    let isJoined = false
+    let userVotes = {}
+    if (userId) {
+      const memberDoc = await adminDb
+        .collection('subfapps')
+        .doc(subfappName)
+        .collection('members')
+        .doc(userId)
+        .get()
+      isJoined = memberDoc.exists
+
+      // Get user votes
+      const votesPromises = posts.map(post => 
+        adminDb.collection('posts')
+          .doc(post.id)
+          .collection('votes')
+          .doc(userId)
+          .get()
+      )
+      const voteDocs = await Promise.all(votesPromises)
+      userVotes = voteDocs.reduce((acc, doc, index) => {
+        if (doc.exists) {
+          acc[posts[index].id] = doc.data()?.voteType
+        }
+        return acc
+      }, {})
     }
 
-    // Fetch subfapp details, posts, memberships, and user votes
-    const [subfapp, posts, memberships, userVotes, randomPosts] = await Promise.all([
-      executeQuery<Subfapp[]>({
-        query: `
-          SELECT name, member_count, description
-          FROM subfapps
-          WHERE name = ?
-        `,
-        values: [params.name]
-      }).then(results => results[0]),
-
-      executeQuery<Post[]>({
-        query: `
-          SELECT 
-            id,
-            title,
-            content,
-            image_url,
-            subfapp,
-            user_id,
-            DATE_FORMAT(published_date, '%Y-%m-%d') as published_date,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') as updated_at,
-            upvotes,
-            downvotes
-          FROM posts 
-          WHERE subfapp = ?
-          ORDER BY created_at DESC
-        `,
-        values: [params.name]
-      }),
-
-      userId ? executeQuery<any[]>({
-        query: `
-          SELECT 1 as joined
-          FROM subfapp_members
-          WHERE user_id = ? AND subfapp_name = ?
-        `,
-        values: [userId, params.name]
-      }) : Promise.resolve([]),
-
-      userId ? executeQuery<any[]>({
-        query: `
-          SELECT post_id, vote_type
-          FROM post_votes
-          WHERE user_id = ?
-        `,
-        values: [userId]
-      }) : Promise.resolve([]),
-
-      // Add query for random posts
-      executeQuery<Post[]>({
-        query: `
-          SELECT 
-            id,
-            title,
-            subfapp,
-            upvotes,
-            downvotes,
-            created_at
-          FROM posts 
-          WHERE subfapp != ?
-          ORDER BY RAND()
-          LIMIT 5
-        `,
-        values: [params.name]
-      })
-    ])
-
-    if (!subfapp) {
-      console.error(`Subfapp ${params.name} details not found`)
-      return { notFound: true }
-    }
-
-    // Convert user votes to a map
-    const votedPosts: Record<number, 'up' | 'down'> = {}
-    userVotes.forEach((vote: { post_id: number; vote_type: 'up' | 'down' }) => {
-      votedPosts[vote.post_id] = vote.vote_type
-    })
+    // Get random posts
+    const randomPosts = await adminDb.collection('posts')
+      .where('subfapp', '!=', subfappName)
+      .limit(5)
+      .get()
+      .then(snapshot => snapshot.docs.map(doc => {
+        const data = doc.data()
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+          updatedAt: data?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+          title: data.title || '',
+          content: data.content || '',
+          imageUrl: data.imageUrl || null,
+          subfapp: data.subfapp || '',
+          userId: data.userId || '',
+          upvotes: data.upvotes || 0,
+          downvotes: data.downvotes || 0,
+          commentCount: data.commentCount || 0
+        }
+      }))
 
     return {
       props: {
         subfapp: JSON.parse(JSON.stringify(subfapp)),
         posts: JSON.parse(JSON.stringify(posts)),
-        isJoined: memberships.length > 0,
-        initialVotedPosts: votedPosts,
+        isJoined,
+        initialVotedPosts: userVotes,
         randomPosts: JSON.parse(JSON.stringify(randomPosts))
       }
     }

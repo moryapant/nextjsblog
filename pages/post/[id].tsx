@@ -5,25 +5,31 @@ import { useRouter } from 'next/router'
 import { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import { executeQuery } from '../../lib/db'
+import { doc, getDoc, collection, query, where, orderBy, getDocs } from 'firebase/firestore'
+import { db } from '../../lib/firebase'
+import { VoteButtons } from '../../components/VoteButtons'
+import { adminDb } from '../../lib/firebase-admin'
 
 interface Post {
-  id: number
+  id: string
   title: string
   content: string | null
-  image_url: string | null
-  published_date: string
+  imageUrl: string | null
+  publishedDate: string
   subfapp: string | null
-  created_at: string
-  updated_at: string
+  createdAt: string
+  updatedAt: string
   downvotes: number
   upvotes: number
-  user_id: string
+  userId: string
 }
 
 interface Subfapp {
   name: string
-  member_count: number
+  memberCount: number
   description: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 interface PostDetailProps {
@@ -42,18 +48,27 @@ interface CommentReply {
   formatted_date: string
 }
 
-interface Comment {
-  id: number
+interface Reply {
+  id: string
+  userId: string
+  userName: string
+  userAvatar: string | null
   content: string
-  user_id: string
-  user_name: string
-  user_avatar: string | null
-  created_at: string
-  formatted_date: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface Comment {
+  id: string
+  content: string
+  userId: string
+  userName: string
+  userAvatar: string | null
+  createdAt: string
+  updatedAt: string
   likes: number
-  isLiked?: boolean
-  replies?: CommentReply[]
-  isReplying?: boolean
+  replyCount: number
+  replies?: Reply[]
 }
 
 const DEFAULT_AVATAR = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default'
@@ -67,58 +82,54 @@ export default function PostDetail({
   const { user } = useAuth()
   const [post, setPost] = useState(initialPost)
   const [voteError, setVoteError] = useState<string | null>(null)
-  const [votedPosts, setVotedPosts] = useState<Record<number, 'up' | 'down' | null>>({})
+  const [votedPosts, setVotedPosts] = useState<Record<string, 'up' | 'down' | null>>({})
   const [joinedSubfapps, setJoinedSubfapps] = useState<string[]>(userMemberships)
   const [isJoining, setIsJoining] = useState<Record<string, boolean>>({})
   const [comments, setComments] = useState<Comment[]>([])
   const [newComment, setNewComment] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [likedComments, setLikedComments] = useState<number[]>([])
-  const [replyingTo, setReplyingTo] = useState<number | null>(null)
+  const [likedComments, setLikedComments] = useState<string[]>([])
+  const [replyingTo, setReplyingTo] = useState<string | null>(null)
   const [replyContent, setReplyContent] = useState('')
+  const [userVote, setUserVote] = useState<'up' | 'down' | null>(null)
 
   // Fetch user's vote when component mounts
   useEffect(() => {
     const fetchUserVote = async () => {
-      if (!user) {
-        setVotedPosts({})
-        return
-      }
+      if (!user || !post) return;
 
       try {
-        const response = await fetch(`/api/posts/user-votes?userId=${user.uid}`)
-        if (response.ok) {
-          const votes = await response.json()
-          const voteMap: Record<number, 'up' | 'down'> = {}
-          votes.forEach((vote: { post_id: number; vote_type: 'up' | 'down' }) => {
-            voteMap[vote.post_id] = vote.vote_type
-          })
-          setVotedPosts(voteMap)
-        }
+        const response = await fetch(`/api/posts/user-vote?postId=${post.id}&userId=${user.uid}`)
+        if (!response.ok) throw new Error('Failed to fetch vote')
+        
+        const data = await response.json()
+        setUserVote(data.userVote)
       } catch (error) {
-        console.error('Error fetching user votes:', error)
+        console.error('Error fetching user vote:', error)
       }
     }
 
     fetchUserVote()
-  }, [user])
+  }, [user, post?.id])
 
   // Add this effect to fetch comments
   useEffect(() => {
     const fetchComments = async () => {
+      if (!post) return;
+
       try {
         const response = await fetch(`/api/comments?postId=${post.id}`)
-        if (response.ok) {
-          const data = await response.json()
-          setComments(data)
-        }
+        if (!response.ok) throw new Error('Failed to fetch comments')
+        
+        const data = await response.json()
+        setComments(data)
       } catch (error) {
         console.error('Error fetching comments:', error)
       }
     }
 
     fetchComments()
-  }, [post.id])
+  }, [post?.id])
 
   const handleVote = async (voteType: 'up' | 'down') => {
     if (!user) {
@@ -141,19 +152,18 @@ export default function PostDetail({
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.message)
+        throw new Error('Failed to vote')
       }
 
-      const updatedPost = await response.json()
+      const data = await response.json()
       setPost(prev => ({ 
         ...prev, 
-        upvotes: updatedPost.upvotes, 
-        downvotes: updatedPost.downvotes 
+        upvotes: data.upvotes, 
+        downvotes: data.downvotes 
       }))
-      setVotedPosts(prev => ({ ...prev, [post.id]: voteType }))
+      setUserVote(data.userVote)
     } catch (error) {
-      setVoteError(error instanceof Error ? error.message : 'Error voting on post')
+      setVoteError('Error voting on post')
       setTimeout(() => setVoteError(null), 3000)
     }
   }
@@ -241,7 +251,7 @@ export default function PostDetail({
     }
   }
 
-  const handleLikeComment = async (commentId: number) => {
+  const handleLikeComment = async (commentId: string) => {
     if (!user) return
 
     try {
@@ -269,7 +279,7 @@ export default function PostDetail({
     }
   }
 
-  const handleReply = async (commentId: number) => {
+  const handleReply = async (commentId: string) => {
     if (!user || !replyContent.trim()) return
 
     try {
@@ -303,8 +313,24 @@ export default function PostDetail({
     }
   }
 
-  if (router.isFallback) {
-    return <div>Loading...</div>
+  if (!post) {
+    return (
+      <div className="min-h-screen bg-gray-50 pt-16">
+        <div className="max-w-3xl mx-auto px-4 py-8">
+          <div className="bg-white rounded-lg shadow-sm p-4">
+            <div className="animate-pulse">
+              <div className="h-6 bg-gray-200 rounded w-3/4 mb-4"></div>
+              <div className="h-4 bg-gray-200 rounded w-1/4 mb-6"></div>
+              <div className="space-y-3">
+                <div className="h-4 bg-gray-200 rounded"></div>
+                <div className="h-4 bg-gray-200 rounded"></div>
+                <div className="h-4 bg-gray-200 rounded w-5/6"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -325,67 +351,44 @@ export default function PostDetail({
           {subfapps?.length > 0 && (
             <div className="hidden lg:block w-64 flex-shrink-0 space-y-4">
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                <div className="p-4 bg-blue-500 text-white">
-                  <h2 className="font-semibold text-lg">Popular Subfapps</h2>
-                </div>
-                <div className="divide-y divide-gray-100">
+                <div className="p-4">
+                  <h3 className="text-sm font-medium text-gray-900">
+                    Popular Communities
+                  </h3>
                   {subfapps.map((subfapp) => (
-                    <Link 
-                      key={subfapp.name}
-                      href={`/f/${subfapp.name}`}
-                      className="block hover:bg-gray-50 transition-colors"
-                    >
-                      <div className="p-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-2">
-                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
-                              f/
-                            </div>
-                            <div>
-                              <h3 className="font-medium text-gray-900 hover:text-blue-600">
-                                {subfapp.name}
-                              </h3>
-                              <p className="text-xs text-gray-500">
-                                {subfapp.member_count.toLocaleString()} members
-                              </p>
-                            </div>
-                          </div>
-                          <button 
-                            onClick={(e) => {
-                              e.preventDefault()
-                              handleJoinSubfapp(subfapp.name)
-                            }}
-                            disabled={isJoining[subfapp.name]}
-                            className={`px-4 py-1 text-sm font-medium rounded-full transition-colors ${
-                              joinedSubfapps.includes(subfapp.name)
-                                ? 'text-gray-600 hover:text-gray-700 hover:bg-gray-100'
-                                : 'text-blue-600 hover:text-blue-700 hover:bg-blue-50'
-                            }`}
-                          >
-                            {isJoining[subfapp.name]
-                              ? 'Loading...'
-                              : joinedSubfapps.includes(subfapp.name)
-                              ? 'Leave'
-                              : 'Join'
-                            }
-                          </button>
-                        </div>
-                        {subfapp.description && (
-                          <p className="mt-2 text-sm text-gray-600 line-clamp-2">
-                            {subfapp.description}
+                    <div key={subfapp.name} className="mt-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Link href={`/f/${subfapp.name}`} className="text-sm font-medium text-gray-900 hover:text-blue-600">
+                            f/{subfapp.name}
+                          </Link>
+                          <p className="text-xs text-gray-500">
+                            {subfapp.memberCount.toLocaleString()} members
                           </p>
-                        )}
+                        </div>
+                        <button
+                          onClick={() => handleJoinSubfapp(subfapp.name)}
+                          disabled={isJoining[subfapp.name]}
+                          className={`px-3 py-1 text-sm font-medium rounded-full ${
+                            joinedSubfapps.includes(subfapp.name)
+                              ? 'text-blue-700 hover:bg-blue-50'
+                              : 'text-white bg-blue-600 hover:bg-blue-700'
+                          }`}
+                        >
+                          {isJoining[subfapp.name]
+                            ? 'Loading...'
+                            : joinedSubfapps.includes(subfapp.name)
+                            ? 'Joined'
+                            : 'Join'}
+                        </button>
                       </div>
-                    </Link>
+                      {subfapp.description && (
+                        <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                          {subfapp.description}
+                        </p>
+                      )}
+                    </div>
                   ))}
-                </div>
-                <div className="p-3 bg-gray-50 border-t border-gray-100">
-                  <Link 
-                    href="/subfapps"
-                    className="block text-center text-sm text-blue-600 hover:text-blue-700 font-medium"
-                  >
-                    View All Subfapps
-                  </Link>
                 </div>
               </div>
             </div>
@@ -417,70 +420,16 @@ export default function PostDetail({
             {/* Post Article */}
             <article className="bg-white rounded-lg shadow-sm overflow-hidden">
               <div className="flex">
-                {/* Vote buttons column */}
-                <div className="flex flex-col items-center w-12 pt-3 bg-gray-50">
-                  <button 
-                    onClick={() => handleVote('up')}
-                    className={`w-8 h-8 flex items-center justify-center rounded-md ${
-                      votedPosts[post.id] === 'up' 
-                        ? 'text-green-500 bg-green-50' 
-                        : 'text-gray-400 hover:text-green-500 hover:bg-gray-100'
-                    } transition-all duration-200`}
-                    aria-label="Upvote"
-                  >
-                    <svg 
-                      className={`w-5 h-5 ${
-                        votedPosts[post.id] === 'up' ? 'transform scale-110' : ''
-                      }`}
-                      viewBox="0 0 24 24" 
-                      fill={votedPosts[post.id] === 'up' ? 'currentColor' : 'none'} 
-                      stroke="currentColor" 
-                      strokeWidth="2.5"
-                    >
-                      <path 
-                        d="M12 4l8 8H4l8-8z" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
-                  
-                  <span className={`text-sm font-bold my-1 ${
-                    votedPosts[post.id] === 'up' 
-                      ? 'text-green-500'
-                      : votedPosts[post.id] === 'down'
-                      ? 'text-red-500'
-                      : 'text-gray-800'
-                  }`}>
-                    {getVoteScore()}
-                  </span>
-                  
-                  <button 
-                    onClick={() => handleVote('down')}
-                    className={`w-8 h-8 flex items-center justify-center rounded-md ${
-                      votedPosts[post.id] === 'down' 
-                        ? 'text-red-500 bg-red-50' 
-                        : 'text-gray-400 hover:text-red-500 hover:bg-gray-100'
-                    } transition-all duration-200`}
-                    aria-label="Downvote"
-                  >
-                    <svg 
-                      className={`w-5 h-5 ${
-                        votedPosts[post.id] === 'down' ? 'transform scale-110' : ''
-                      }`}
-                      viewBox="0 0 24 24" 
-                      fill={votedPosts[post.id] === 'down' ? 'currentColor' : 'none'} 
-                      stroke="currentColor" 
-                      strokeWidth="2.5"
-                    >
-                      <path 
-                        d="M4 8l8 8 8-8H4z" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
-                </div>
+                <VoteButtons
+                  postId={post.id}
+                  initialUpvotes={post.upvotes}
+                  initialDownvotes={post.downvotes}
+                  initialUserVote={userVote}
+                  onVoteError={setVoteError}
+                  orientation="horizontal"
+                  size="medium"
+                  className="hover:shadow-md"
+                />
 
                 {/* Post content */}
                 <div className="flex-1 min-w-0">
@@ -505,7 +454,7 @@ export default function PostDetail({
                         <span>Posted by Anonymous</span>
                         <span className="mx-2 text-gray-300">•</span>
                         <time className="text-gray-500">
-                          {new Date(post.published_date).toLocaleDateString('en-US', {
+                          {new Date(post.publishedDate).toLocaleDateString('en-US', {
                             month: 'short',
                             day: 'numeric',
                             year: 'numeric'
@@ -521,11 +470,11 @@ export default function PostDetail({
                   </div>
 
                   {/* Post Image */}
-                  {post.image_url && (
+                  {post.imageUrl && (
                     <div className="px-6 my-6">
                       <div className="relative aspect-video bg-gray-100 rounded-lg overflow-hidden shadow-sm">
                         <img
-                          src={post.image_url}
+                          src={post.imageUrl}
                           alt={post.title}
                           className="absolute inset-0 w-full h-full object-contain"
                           loading="lazy"
@@ -544,7 +493,7 @@ export default function PostDetail({
                   </div>
 
                   {/* Post Actions */}
-                  <div className="flex items-center space-x-6 text-gray-500 px-6 py-4 border-t border-gray-100">
+                  <div className="flex items-center space-x-4 mt-4">
                     <button className="flex items-center space-x-2 hover:bg-gray-50 px-4 py-2 rounded-full transition-colors">
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -628,10 +577,10 @@ export default function PostDetail({
                       {comments.map((comment) => (
                         <div key={comment.id} className="group bg-white rounded-xl shadow-sm hover:shadow-md transition-all duration-200 p-5">
                           <div className="flex items-start space-x-3">
-                            {comment.user_avatar ? (
+                            {comment.userAvatar ? (
                               <img 
-                                src={comment.user_avatar} 
-                                alt={comment.user_name}
+                                src={comment.userAvatar}
+                                alt={comment.userName}
                                 className="w-10 h-10 rounded-full object-cover border-2 border-white shadow-sm"
                                 onError={(e) => {
                                   const img = e.target as HTMLImageElement
@@ -640,23 +589,17 @@ export default function PostDetail({
                               />
                             ) : (
                               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-medium shadow-sm">
-                                {comment.user_name.charAt(0).toUpperCase()}
+                                {comment.userName.charAt(0).toUpperCase()}
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center space-x-2">
                                 <h3 className="text-sm font-semibold text-gray-900">
-                                  {comment.user_name}
+                                  {comment.userName}
                                 </h3>
                                 <span className="text-gray-300">•</span>
                                 <time className="text-xs text-gray-500">
-                                  {new Date(comment.formatted_date).toLocaleString(undefined, {
-                                    year: 'numeric',
-                                    month: 'short',
-                                    day: 'numeric',
-                                    hour: '2-digit',
-                                    minute: '2-digit'
-                                  })}
+                                  {new Date(comment.createdAt).toLocaleString()}
                                 </time>
                               </div>
                               <p className="mt-2 text-gray-700 whitespace-pre-wrap break-words">
@@ -746,10 +689,10 @@ export default function PostDetail({
                                   {comment.replies.map((reply) => (
                                     <div key={reply.id} className="bg-gray-50 rounded-lg p-4">
                                       <div className="flex items-start space-x-3">
-                                        {reply.user_avatar ? (
+                                        {reply.userAvatar ? (
                                           <img 
-                                            src={reply.user_avatar}
-                                            alt={reply.user_name}
+                                            src={reply.userAvatar}
+                                            alt={reply.userName}
                                             className="w-8 h-8 rounded-full object-cover border-2 border-white shadow-sm"
                                             onError={(e) => {
                                               const img = e.target as HTMLImageElement
@@ -758,17 +701,17 @@ export default function PostDetail({
                                           />
                                         ) : (
                                           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-medium shadow-sm">
-                                            {reply.user_name.charAt(0).toUpperCase()}
+                                            {reply.userName.charAt(0).toUpperCase()}
                                           </div>
                                         )}
                                         <div className="flex-1">
                                           <div className="flex items-center space-x-2">
                                             <span className="text-sm font-medium text-gray-900">
-                                              {reply.user_name}
+                                              {reply.userName}
                                             </span>
                                             <span className="text-gray-300">•</span>
                                             <time className="text-xs text-gray-500">
-                                              {new Date(reply.formatted_date).toLocaleString()}
+                                              {new Date(reply.createdAt).toLocaleString()}
                                             </time>
                                           </div>
                                           <p className="mt-1 text-gray-700">
@@ -804,78 +747,42 @@ export default function PostDetail({
   )
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ params, req }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params }) => {
   try {
-    if (!params?.id || Array.isArray(params.id)) {
+    const postId = params?.id as string
+    const postDoc = await adminDb.collection('posts').doc(postId).get()
+
+    if (!postDoc.exists) {
       return { notFound: true }
     }
 
-    // Fetch both post and subfapps with error handling
-    const [post, subfapps = []] = await Promise.all([
-      executeQuery<Post[]>({
-        query: `
-          SELECT 
-            id,
-            title,
-            content,
-            image_url,
-            subfapp,
-            user_id,
-            DATE_FORMAT(published_date, '%Y-%m-%d') as published_date,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') as updated_at,
-            upvotes,
-            downvotes
-          FROM posts 
-          WHERE id = ?
-        `,
-        values: [parseInt(params.id, 10)]
-      }).then(results => results[0]),
-      
-      executeQuery<Subfapp[]>({
-        query: `
-          SELECT 
-            name,
-            member_count,
-            description
-          FROM subfapps
-          ORDER BY member_count DESC
-          LIMIT 10
-        `
-      }).catch(() => []), // Return empty array if subfapps query fails
-      
-      executeQuery<string[]>({
-        query: `
-          SELECT subfapp_name
-          FROM subfapp_members
-          WHERE user_id = ?
-        `,
-        values: [params.id]
-      }).catch(() => []) // Return empty array if user memberships query fails
-    ])
-
-    if (!post) {
-      return { notFound: true }
+    const postData = postDoc.data()
+    const post = {
+      id: postDoc.id,
+      ...postData,
+      // Handle dates properly
+      createdAt: postData?.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+      updatedAt: postData?.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
     }
 
-    // Get user ID from cookie or header
-    const userId = req.cookies['userId'] // Adjust based on your auth setup
+    // Get subfapps for sidebar
+    const subfappsSnapshot = await adminDb.collection('subfapps')
+      .orderBy('memberCount', 'desc')
+      .limit(5)
+      .get()
 
-    // Fetch user memberships if logged in
-    const userMemberships = userId ? await executeQuery({
-      query: `
-        SELECT subfapp_name
-        FROM subfapp_members
-        WHERE user_id = ?
-      `,
-      values: [userId]
-    }).then(results => results.map((r: any) => r.subfapp_name)) : []
+    const subfapps = subfappsSnapshot.docs.map(doc => ({
+      name: doc.id,
+      ...doc.data(),
+      memberCount: doc.data().memberCount || 0,
+      createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+      updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
+    }))
 
     return {
       props: {
         post: JSON.parse(JSON.stringify(post)),
-        subfapps: JSON.parse(JSON.stringify(subfapps || [])),
-        userMemberships: JSON.parse(JSON.stringify(userMemberships))
+        subfapps: JSON.parse(JSON.stringify(subfapps))
       }
     }
   } catch (error) {

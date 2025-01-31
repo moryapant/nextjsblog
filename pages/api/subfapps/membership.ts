@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { executeQuery } from '../../../lib/db'
+import { adminDb } from '../../../lib/firebase-admin'
+import { FieldValue } from 'firebase-admin/firestore'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -9,55 +10,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const { userId, subfappName, action } = req.body
 
-    if (!userId || !subfappName) {
+    if (!userId || !subfappName || !action) {
       return res.status(400).json({ message: 'Missing required fields' })
     }
 
-    if (action === 'join') {
-      await executeQuery({
-        query: `
-          INSERT INTO subfapp_members (user_id, subfapp_name)
-          VALUES (?, ?)
-          ON DUPLICATE KEY UPDATE joined_at = CURRENT_TIMESTAMP
-        `,
-        values: [userId, subfappName]
-      })
+    const subfappRef = adminDb.collection('subfapps').doc(subfappName)
+    const memberRef = subfappRef.collection('members').doc(userId)
 
-      // Update member count
-      await executeQuery({
-        query: `
-          UPDATE subfapps 
-          SET member_count = (
-            SELECT COUNT(*) 
-            FROM subfapp_members 
-            WHERE subfapp_name = ?
-          )
-          WHERE name = ?
-        `,
-        values: [subfappName, subfappName]
-      })
-    } else if (action === 'leave') {
-      await executeQuery({
-        query: 'DELETE FROM subfapp_members WHERE user_id = ? AND subfapp_name = ?',
-        values: [userId, subfappName]
-      })
+    // Start a transaction
+    await adminDb.runTransaction(async (transaction) => {
+      const subfappDoc = await transaction.get(subfappRef)
+      if (!subfappDoc.exists) {
+        throw new Error('Subfapp not found')
+      }
 
-      // Update member count
-      await executeQuery({
-        query: `
-          UPDATE subfapps 
-          SET member_count = (
-            SELECT COUNT(*) 
-            FROM subfapp_members 
-            WHERE subfapp_name = ?
-          )
-          WHERE name = ?
-        `,
-        values: [subfappName, subfappName]
-      })
-    }
+      const currentMemberCount = subfappDoc.data()?.memberCount || 0
 
-    res.status(200).json({ message: `Successfully ${action}ed subfapp` })
+      if (action === 'join') {
+        // Add member
+        transaction.set(memberRef, {
+          userId,
+          joinedAt: new Date().toISOString()
+        })
+
+        // Increment member count
+        transaction.update(subfappRef, {
+          memberCount: currentMemberCount + 1
+        })
+      } else if (action === 'leave') {
+        // Remove member
+        transaction.delete(memberRef)
+
+        // Decrement member count
+        transaction.update(subfappRef, {
+          memberCount: Math.max(0, currentMemberCount - 1)
+        })
+      }
+    })
+
+    // Get updated member count
+    const updatedSubfapp = await subfappRef.get()
+    const memberCount = updatedSubfapp.data()?.memberCount || 0
+
+    res.status(200).json({ 
+      message: `Successfully ${action}ed subfapp`,
+      memberCount
+    })
   } catch (error) {
     console.error('Error managing subfapp membership:', error)
     res.status(500).json({ message: 'Error managing subfapp membership' })

@@ -1,135 +1,29 @@
-import mysql from 'mysql2'
-import { Pool, PoolConnection, QueryError } from 'mysql2/promise'
+import { db } from './firebase'
+import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore'
 
-// Create a singleton pool instance
-let pool: Pool | null = null
-
-const createPool = () => {
-  return mysql.createPool({
-    host: process.env.MYSQL_HOST,
-    port: Number(process.env.MYSQL_PORT),
-    database: process.env.MYSQL_DATABASE,
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD || '',
-    waitForConnections: true,
-    connectionLimit: 3, // Drastically reduce connection limit
-    maxIdle: 3, // Match maxIdle with connectionLimit
-    idleTimeout: 30000, // Reduce idle timeout to 30 seconds
-    queueLimit: 10, // Limit queue size
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0
-  }).promise()
+export async function getPosts() {
+  const postsRef = collection(db, 'posts')
+  const q = query(postsRef, orderBy('createdAt', 'desc'), limit(10))
+  const querySnapshot = await getDocs(q)
+  
+  return querySnapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data()
+  }))
 }
 
-const getPool = () => {
-  if (!pool) {
-    pool = createPool()
+export async function getSubfapps() {
+  try {
+    const subfappsRef = collection(db, 'subfapps')
+    const q = query(subfappsRef, orderBy('memberCount', 'desc'))
+    const querySnapshot = await getDocs(q)
     
-    // Add error handling
-    pool.on('connection', (connection: PoolConnection) => {
-      connection.on('error', (err: QueryError) => {
-        console.error('Database connection error:', err)
-      })
-    })
-
-    // Handle pool errors
-    pool.on('acquire', () => {
-      console.log('Connection acquired')
-    })
-
-    pool.on('release', () => {
-      console.log('Connection released')
-    })
-  }
-  return pool
-}
-
-export async function executeQuery<T>({ 
-  query, 
-  values 
-}: { 
-  query: string
-  values?: any[] 
-}): Promise<T> {
-  let connection: PoolConnection | null = null
-  let retries = 3
-
-  while (retries > 0) {
-    try {
-      const pool = getPool()
-      connection = await pool.getConnection()
-      
-      const [results] = await connection.execute(query, values)
-      return results as T
-    } catch (error: any) {
-      retries--
-      if (error.code === 'ER_CON_COUNT_ERROR' && retries > 0) {
-        // Wait for 1 second before retrying
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        continue
-      }
-      throw error
-    } finally {
-      if (connection) {
-        connection.release()
-      }
-    }
-  }
-
-  throw new Error('Failed to execute query after retries')
-}
-
-// Helper function for transactions
-export async function withTransaction<T>(
-  callback: (connection: PoolConnection) => Promise<T>
-): Promise<T> {
-  const pool = getPool()
-  const connection = await pool.getConnection()
-  
-  try {
-    await connection.beginTransaction()
-    const result = await callback(connection)
-    await connection.commit()
-    return result
+    return querySnapshot.docs.map(doc => ({
+      name: doc.id,
+      ...doc.data()
+    }))
   } catch (error) {
-    await connection.rollback()
+    console.error('Error fetching subfapps:', error)
     throw error
-  } finally {
-    connection.release()
-  }
-}
-
-// Cleanup function
-export async function closePool(): Promise<void> {
-  if (pool) {
-    await pool.end()
-    pool = null
-  }
-}
-
-// Health check
-export async function checkConnection(): Promise<boolean> {
-  try {
-    const pool = getPool()
-    const connection = await pool.getConnection()
-    connection.release()
-    return true
-  } catch (error) {
-    console.error('Database health check failed:', error)
-    return false
-  }
-}
-
-// Add a cleanup function for API routes
-export async function withConnection<T>(
-  callback: (connection: PoolConnection) => Promise<T>
-): Promise<T> {
-  const pool = getPool()
-  const connection = await pool.getConnection()
-  
-  try {
-    return await callback(connection)
-  } finally {
-    connection.release()
   }
 } 

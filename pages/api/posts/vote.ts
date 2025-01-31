@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { executeQuery } from '../../../lib/db'
+import { adminDb } from '../../../lib/firebase-admin'
+import { FieldValue } from 'firebase-admin/firestore'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -13,46 +14,57 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ message: 'Missing required fields' })
     }
 
-    // Delete existing vote if any
-    await executeQuery({
-      query: 'DELETE FROM post_votes WHERE post_id = ? AND user_id = ?',
-      values: [postId, userId]
-    })
+    const postRef = adminDb.collection('posts').doc(postId)
+    const voteRef = postRef.collection('votes').doc(userId)
 
-    // If voteType is not null, insert new vote
-    if (voteType) {
-      await executeQuery({
-        query: `
-          INSERT INTO post_votes (post_id, user_id, vote_type)
-          VALUES (?, ?, ?)
-        `,
-        values: [postId, userId, voteType]
+    // Get current vote
+    const voteDoc = await voteRef.get()
+    const currentVote = voteDoc.exists ? voteDoc.data()?.voteType : null
+
+    // Update vote counts based on current and new vote
+    const batch = adminDb.batch()
+
+    if (currentVote === voteType) {
+      // Remove vote if clicking same button
+      batch.delete(voteRef)
+      batch.update(postRef, {
+        [`${voteType}votes`]: FieldValue.increment(-1)
+      })
+    } else {
+      // Add new vote
+      if (currentVote) {
+        // Change vote: decrease old vote type, increase new vote type
+        batch.update(postRef, {
+          [`${currentVote}votes`]: FieldValue.increment(-1),
+          [`${voteType}votes`]: FieldValue.increment(1)
+        })
+      } else {
+        // New vote: just increase new vote type
+        batch.update(postRef, {
+          [`${voteType}votes`]: FieldValue.increment(1)
+        })
+      }
+      
+      batch.set(voteRef, {
+        userId,
+        voteType,
+        createdAt: FieldValue.serverTimestamp()
       })
     }
 
-    // Update post vote counts
-    await executeQuery({
-      query: `
-        UPDATE posts p
-        SET 
-          upvotes = (SELECT COUNT(*) FROM post_votes WHERE post_id = p.id AND vote_type = 'up'),
-          downvotes = (SELECT COUNT(*) FROM post_votes WHERE post_id = p.id AND vote_type = 'down')
-        WHERE id = ?
-      `,
-      values: [postId]
-    })
+    await batch.commit()
 
-    // Get updated post counts
-    const [updatedPost] = await executeQuery<any[]>({
-      query: `
-        SELECT upvotes, downvotes 
-        FROM posts 
-        WHERE id = ?
-      `,
-      values: [postId]
-    })
+    // Get updated post and user's vote
+    const [updatedPost, updatedVote] = await Promise.all([
+      postRef.get(),
+      voteRef.get()
+    ])
 
-    res.status(200).json(updatedPost)
+    res.status(200).json({
+      upvotes: updatedPost.data()?.upvotes || 0,
+      downvotes: updatedPost.data()?.downvotes || 0,
+      userVote: updatedVote.exists ? updatedVote.data()?.voteType : null
+    })
   } catch (error) {
     console.error('Error handling vote:', error)
     res.status(500).json({ message: 'Error handling vote' })

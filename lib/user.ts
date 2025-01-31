@@ -1,79 +1,18 @@
-import { executeQuery } from './db'
-import { User } from 'firebase/auth'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from './firebase'
 
-interface DbUser {
-  id: string
-  display_name: string
-  email: string
-  photo_url: string | null
-  created_at: string
-  updated_at: string
-}
-
-export async function createOrUpdateUser(firebaseUser: User): Promise<DbUser> {
+export async function getUserById(userId: string) {
   try {
-    // Check if user exists
-    const [existingUser] = await executeQuery<DbUser[]>({
-      query: 'SELECT * FROM users WHERE id = ?',
-      values: [firebaseUser.uid]
-    })
-
-    if (existingUser) {
-      // Update existing user
-      await executeQuery({
-        query: `
-          UPDATE users 
-          SET 
-            display_name = ?,
-            email = ?,
-            photo_url = ?
-          WHERE id = ?
-        `,
-        values: [
-          firebaseUser.displayName,
-          firebaseUser.email,
-          firebaseUser.photoURL,
-          firebaseUser.uid
-        ]
-      })
-    } else {
-      // Create new user
-      await executeQuery({
-        query: `
-          INSERT INTO users (id, display_name, email, photo_url)
-          VALUES (?, ?, ?, ?)
-        `,
-        values: [
-          firebaseUser.uid,
-          firebaseUser.displayName,
-          firebaseUser.email,
-          firebaseUser.photoURL
-        ]
-      })
+    const userDoc = await getDoc(doc(db, 'users', userId))
+    if (!userDoc.exists()) {
+      return null
     }
-
-    // Return updated user data
-    const [updatedUser] = await executeQuery<DbUser[]>({
-      query: 'SELECT * FROM users WHERE id = ?',
-      values: [firebaseUser.uid]
-    })
-
-    return updatedUser
+    return {
+      id: userDoc.id,
+      ...userDoc.data()
+    }
   } catch (error) {
-    console.error('Error managing user:', error)
-    throw error
-  }
-}
-
-export async function getUser(userId: string): Promise<DbUser | null> {
-  try {
-    const [user] = await executeQuery<DbUser[]>({
-      query: 'SELECT * FROM users WHERE id = ?',
-      values: [userId]
-    })
-    return user || null
-  } catch (error) {
-    console.error('Error getting user:', error)
-    throw error
+    console.error('Error fetching user:', error)
+    return null
   }
 } 
